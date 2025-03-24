@@ -1,0 +1,10 @@
+<?xml version="1.0" ?>
+<ICMArtefacts>
+	<Global>
+		<Artefact ModifiedBy="Administrator" ModifiedDate="01/06/2024 18:33:29.342" StartTime="25/08/2021 01:09:14.860" EndTime="25/08/2021 01:09:24.860"/>
+	</Global>
+	<SignalGroup Name="icp">
+		<Artefact ModifiedBy="Administrator" ModifiedDate="01/06/2024 18:33:29.342" StartTime="25/08/2021 01:39:14.860" EndTime="25/08/2021 01:39:24.860"/>
+	</SignalGroup>
+	<Info HDF5Filename="TBI_example2.hdf5" UserID="Annotator2"/>
+</ICMArtefacts>

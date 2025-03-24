@@ -1,64 +1,48 @@
-from lib.loader import SingleFileExtractor
+#!/usr/bin/env python3
+"""
+Extract Tool - Exports signal segments from HDF5 files
 
+This script extracts normal and anomalous segments from a signal in an HDF5 file
+and exports them to various formats (CSV, NumPy text files).
+"""
+
+from lib.loader import FolderExtractor
 import numpy as np
 import argparse
 import os
-
-WINDOW_SIZE_SEC = 10
+from pathlib import Path
 
 
 def main(args):
     hdf5_filepath = args.f
     output_dir = args.o
-    mode = args.s
-    matching = args.sn
+    art_filepath = args.a
 
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
+    extractor = FolderExtractor(hdf5_filepath)
 
-    
-    if matching:
-        extractor = SingleFileExtractor(hdf5_filepath,
-                                        mode=mode,
-                                        matching=True,
-                                        matching_multiplier=2)
-        anomaly_segments = extractor.get_anomalies()
-        normal_segments = extractor.get_normal()[:len(anomaly_segments)]
-    else:
-        extractor = SingleFileExtractor(hdf5_filepath,
-                                        mode=mode,
-                                        matching=False)
-        anomaly_segments = extractor.get_anomalies()
-        normal_segments = extractor.get_normal()
+    extractor.auto_annotate(art_filepath)
 
-    # save segments
-    for segment in anomaly_segments:
-        np.savetxt(
-                os.path.join(output_dir, f"{mode}_{int(segment.start_time)}_1.txt"),
-                segment.data)
-    for segment in normal_segments:
-        np.savetxt(
-                os.path.join(output_dir, f"{mode}_{int(segment.start_time)}_0.txt"),
-                segment.data)
-
+    extractor.export_to_csv(output_dir)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-            description="""
-            HDF5 Creathon extract tool.
-            Use this tool to extract signal segments from HDF5 file and their annotations from ARTF file.
-            Outputs signal segments as numpy text files in the output directory.
-            Files are named as {signal}_{start_ts_micro}_{is_anomalous}.txt where 0 is not an anomaly and 1 is an anomaly.
-            """)
-    parser.add_argument('-f', type=str, help='Path to HDF5 file (with corresponding .artf file)', required=True)
-    parser.add_argument('-s', type=str, help='Signal to export, abp or icp', required=True)
-    parser.add_argument('-o', type=str, help='Output directory', required=True)
-    parser.add_argument('-sn', action='store_true', help='Export same number of normal and anomalous segments')
+        description="""
+        HDF5 Extract Tool.
+        
+        Extracts signal segments from an folder containing HDF5 files and saves them to csv format.
+        """)
+    
+    parser.add_argument('-f', type=str, 
+                       help='Path to a folder containing HDF5 files', 
+                       required=True)
+    parser.add_argument('-a', type=str, 
+                       help='Path to a folder containing ART files', 
+                       required=True)
+    parser.add_argument('-o', type=str, 
+                       help='Output directory', 
+                       required=True)
 
     args = parser.parse_args()
-
-    if args.s not in {'abp', 'icp'}:
-        raise Exception("Unknown signal value")
 
     main(args)
 

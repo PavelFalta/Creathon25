@@ -1,7 +1,7 @@
 """
-v1.1f
+v2.3c
 
-Developed by The Department of Data Analysis and Simulations.
+Developed by The Laboratory of Data Analysis and Simulations.
 
 More information at odas.ujep.cz
 
@@ -12,509 +12,1167 @@ import datetime
 import os
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple, Set
-import json
+from typing import List, Dict, Union, Optional, Set, Tuple, Any, TypeVar, Iterable, Iterator, Callable, TypedDict
 import csv
-
+import json
 import h5py
 import numpy as np
+import hashlib
+from abc import ABC, abstractmethod
+from collections import defaultdict
+import pandas as pd
 
 
-class EmptySegment(Exception):
-    """Custom exception raised when a segment is found to be empty."""
-    pass
+def unix_from_dt(dt_string: str) -> int:
+    """
+    Converts a datetime string to a Unix timestamp in microseconds.
+    
+    Args:
+        dt_string: A string representation of datetime in format 'dd/mm/yyyy HH:MM:SS.fff'
+        
+    Returns:
+        An integer representing the Unix timestamp in microseconds
+    """
+    return int(datetime.datetime.strptime(dt_string, "%d/%m/%Y %H:%M:%S.%f").replace(tzinfo=datetime.timezone.utc).timestamp() * 1_000_000)
 
+def dt_from_unix(unix: int) -> str:
+    """
+    Converts a Unix timestamp in microseconds to a datetime string.
+    
+    Args:
+        unix: An integer representing the Unix timestamp in microseconds
+        
+    Returns:
+        A string representation of datetime in format 'dd/mm/yyyy HH:MM:SS.fff'
+    """
+    return datetime.datetime.fromtimestamp(unix / 1_000_000, tz=datetime.timezone.utc).strftime("%d/%m/%Y %H:%M:%S.%f")[:-4]
 
-class FrequencyMismatchError(Exception):
-    """Custom exception raised when frequencies differ across files."""
-    pass
+class IExtractor(ABC):
+    """
+    Interface defining the common operations for data extractors.
+    """
+    
+    @abstractmethod
+    def get_raw_data(self, signal_name: str) -> Union[np.ndarray, Dict[str, np.ndarray]]:
+        """
+        Get raw data for a specific signal.
+        
+        Args:
+            signal_name: Name of the signal to retrieve data for
+            
+        Returns:
+            Raw data as a numpy array or a dictionary of arrays
+        """
+        pass
 
+    @abstractmethod
+    def get_signal_names(self) -> Union[List[str], Dict[str, Any]]:
+        """
+        Get all available signal names.
+        
+        Returns:
+            List of signal names or dictionary with signal information
+        """
+        pass
+
+    @abstractmethod
+    def get_annotations(self, signal_name: str) -> Union[Dict[str, 'Annotation'], List[Dict[str, 'Annotation']]]:
+        """
+        Get annotations for a specific signal.
+        
+        Args:
+            signal_name: Name of the signal to retrieve annotations for
+            
+        Returns:
+            Dictionary or list of dictionaries containing annotation information
+        """
+        pass
+
+    @abstractmethod
+    def describe(self) -> str:
+        """
+        Get a human-readable description of the extracted data.
+        
+        Returns:
+            String description of the extracted data
+        """
+        pass
+
+    @abstractmethod
+    def auto_annotate(self, optional_folder_path: Optional[str] = None) -> None:
+        """
+        Automatically annotate signals using available annotation files.
+        
+        Args:
+            optional_folder_path: Optional path to look for annotation files
+        """
+        pass
+
+    @abstractmethod
+    def extract(self, signal_name: str) -> Tuple[List['Segment'], List['Segment']]:
+        """
+        Extract good and anomalous segments for a given signal.
+        
+        Args:
+            signal_name: Name of the signal to extract segments for
+            
+        Returns:
+            Tuple containing lists of good segments and anomalous segments
+        """
+        pass
+    
+    @abstractmethod
+    def load_data(self, *segments: List['Segment']) -> None:
+        """
+        Load data for the given segments.
+        
+        Args:
+            *segments: Variable number of segment lists to load data for
+        """
+        pass
+
+    @abstractmethod
+    def export_to_csv(self, optional_folder_path: Optional[str] = None) -> None:
+        """
+        Export data to CSV format.
+        
+        Args:
+            optional_folder_path: Optional path to save the CSV file
+        """
+        pass
 
 @dataclass
 class Segment:
-    """Represents a segment of data with start and end times, and associated data.
-
-    Attributes:
-        start_time (int): Start time of the segment as a Unix timestamp in microseconds.
-        end_time (int): End time of the segment as a Unix timestamp in microseconds.
-        empty (bool): Whether the segment contains data or not.
-        file (str): Full path to the HDF5 file the segment was extracted from.
-        patient_id (str): The patient ID associated with the segment.
-        frequency (float): Frequency information pulled from the index of the HDF5 file. Default is 0.0.
-        data (np.ndarray): Data values associated with the segment. Default is an empty array.
     """
-    start_time: int
-    end_time: int
-    empty: bool
-    file: str
+    Represents a segment of signal data that may be annotated as normal or anomalous.
+    
+    Attributes:
+        signal_name: Name of the signal this segment belongs to
+        anomalous: Boolean indicating if this segment contains an anomaly
+        start_timestamp: Start time of the segment in microseconds (Unix timestamp)
+        end_timestamp: End time of the segment in microseconds (Unix timestamp)
+        data_file: Path to the file containing the segment data
+        patient_id: Identifier of the patient this segment belongs to
+        annotators: List of annotators who have annotated this segment
+        frequency: Sampling frequency of the signal in Hz
+        data: Array of signal values
+        id: Unique identifier for the segment
+        weight: Weight value representing annotator consensus (0.0-1.0)
+        anomalies_annotations: List of annotators who marked this segment as anomalous
+    """
+    signal_name: str
+    anomalous: bool
+    start_timestamp: int
+    end_timestamp: int
+    data_file: str
     patient_id: str
-    frequency: float = field(default=0.0)
-    data: np.ndarray = field(default_factory=lambda: np.array([]))
+    annotators: List[str]
+    frequency: float
+    data: np.ndarray
+    id: str
+    weight: float
+    anomalies_annotations: List[str]
 
+
+    def describe(self) -> str:
+        """
+        Generate a detailed description of the segment.
+        
+        Returns:
+            A formatted string describing the segment's properties and data statistics
+        """
+        data = self.data
+        data_loaded = len(data) > 0
+        description = {
+            "Signal Name": self.signal_name,
+            "Patient ID": self.patient_id,
+            "Annotators": ", ".join(self.annotators),
+            "Frequency (Hz)": self.frequency,
+            "Start Time": dt_from_unix(self.start_timestamp),
+            "End Time": dt_from_unix(self.end_timestamp),
+            "Duration (s)": (self.end_timestamp - self.start_timestamp) / 1_000_000,
+            "Anomalous": self.anomalous,
+            "Data Loaded": data_loaded
+        }
+        
+        description_str = "\n".join([f"{key}: {value}" for key, value in description.items()])
+        if data_loaded:
+            description["Data Summary"] = {
+                "Count": len(data),
+                "Mean": np.mean(data),
+                "Standard Deviation": np.std(data),
+                "Min": np.min(data),
+                "25th Percentile": np.percentile(data, 25),
+                "Median": np.percentile(data, 50),
+                "75th Percentile": np.percentile(data, 75),
+                "Max": np.max(data)
+            }
+            data_summary = description["Data Summary"]
+            description_str += f"\n\nData Summary:\n"
+            description_str += "\n".join([f"   {key}: {value}" for key, value in data_summary.items()])
+        
+        return description_str
+
+@dataclass
+class Annotation:
+    """
+    Represents an annotation set for a signal, containing good and anomalous segments.
+    
+    Attributes:
+        good_segments: List of segments marked as normal/good
+        anomalies: List of segments marked as anomalous
+        annotator: Name of the annotator who created this annotation
+    """
+    good_segments: List[Segment]
+    anomalies: List[Segment]
+    annotator: str
 
 class Signal:
-    """Handles the loading and processing of signal data from HDF5 files.
-
-    Attributes:
-        file_path (str): Path to the HDF5 file. Must end with ".hdf5".
-        artf_path (str): Path to the ARTF file. Must end with ".artf".
-        mode (str): The mode to use for extracting data from the HDF5 file. Either "abp" or "icp".
-        skip_empty (bool): If true, skips empty segments without raising an EmptySegment exception.
     """
-
-    def __init__(self, file_path: str, artf_path: str, mode: str, skip_empty: bool = False) -> None:
-        self._file_path = file_path
-        self._artf_path = artf_path
-        self._mode = mode.lower()
-        self._skip_empty = skip_empty
-
-        if self._mode not in ["abp", "icp"]:
-            raise ValueError("Invalid signal mode. Must be either 'abp' or 'icp'.")
-
-        self._index_data = self._load_index_data()
-        self._start_times = np.array(
-            [item["starttime"] for item in self._index_data], dtype=np.int64)
-        self._frequencies = np.array(
-            [item["frequency"] for item in self._index_data], dtype=np.float64)
-        self._lengths = np.array([item["length"]
-                                  for item in self._index_data], dtype=np.int64)
-        self._intervals = (1_000_000 / self._frequencies).astype(np.int64)
-        self._data: Dict[Tuple[int, int], np.ndarray] = {}
-
-    def _load_index_data(self) -> np.ndarray:
-        """Loads the index data from the HDF5 file.
-
-        Returns:
-            np.ndarray: The index data loaded from the HDF5 file.
+    Represents a signal from a data file, containing raw data and potential annotations.
+    
+    Attributes:
+        _file_path: Path to the source file
+        _startidx: Starting index in the source data
+        _starttime: Start time in microseconds (Unix timestamp)
+        _length: Number of data points in the signal
+        _frequency: Sampling frequency in Hz
+        _signal_name: Name of the signal
+        _raw_data: Raw signal data
+        _annotations: Dictionary of annotations for this signal
+    """
+    def __init__(
+        self, 
+        file_path: str, 
+        signal_name: str, 
+        startidx: int, 
+        starttime: int, 
+        length: int, 
+        frequency: float, 
+        raw_data: np.ndarray
+    ) -> None:
         """
-        try:
-            with h5py.File(self._file_path, 'r') as hdf:
-                if self._mode == "abp" and hdf.get(f"waves/art"):
-                    self._mode = "art"
+        Initialize a Signal object.
+        
+        Args:
+            file_path: Path to the source file
+            signal_name: Name of the signal
+            startidx: Starting index in the source data
+            starttime: Start time in microseconds (Unix timestamp)
+            length: Number of data points in the signal
+            frequency: Sampling frequency in Hz
+            raw_data: Raw signal data array
+        """
+        self._file_path = file_path
+        self._startidx = startidx
+        self._starttime = starttime
+        self._length = length
+        self._frequency = frequency
+        self._signal_name = signal_name
+        self._raw_data = raw_data
+        self._annotations: Dict[str, Annotation] = {}
 
-                index_data = hdf.get(f"waves/{self._mode}.index")
-                if index_data is None:
-                    index_data = hdf[f"waves/{self._mode}"].attrs["index"]
-                index_data = np.array(
-                    [dict(zip(["startidx", "starttime", "length", "frequency"], item)) for item in index_data]
+    
+    def add_annotation(self, annotation_times_list: List[Tuple[int, int]], annotator: Optional[str]) -> None:
+        """
+        Add an annotation to the signal.
+        
+        Args:
+            annotation_times_list: List of (start_time, end_time) tuples for anomalies
+            annotator: Name of the annotator
+        """
+        length_in_seconds = 10
+        segment_length = int(self._frequency * length_in_seconds)
+        num_segments = len(self._raw_data) // segment_length
+
+        segment_start_times = self._starttime + np.arange(num_segments) * length_in_seconds * 1_000_000
+        segment_end_times = segment_start_times + length_in_seconds * 1_000_000
+
+        patient_id_match = re.search(r"_(\d{3})", self._file_path)
+        patient_id = patient_id_match.group(1) if patient_id_match else "Unknown"
+
+        annotator_base = annotator if annotator else "Unknown"
+        annotator = annotator_base
+        annotator_index = 0
+
+        while any(annotation.annotator == annotator for annotation in self._annotations.values()):
+            annotator = f"{annotator_base}_{annotator_index}"
+            annotator_index += 1
+
+
+        good_segments: List[Segment] = []
+        anomalous_segments: List[Segment] = []
+
+        if annotation_times_list:
+            annotation_times_list = np.array(annotation_times_list)
+            signal_end_time = self._starttime + int(self._length * 1_000_000 / self._frequency)
+
+            valid_annotations = annotation_times_list[(annotation_times_list[:, 0] >= self._starttime) & (annotation_times_list[:, 1] <= signal_end_time)]
+
+            for i in range(num_segments):
+                segment_start_time = segment_start_times[i]
+                segment_end_time = segment_end_times[i]
+
+                is_anomalous = np.any(
+                    (valid_annotations[:, 0] <= segment_start_time) & (valid_annotations[:, 1] > segment_start_time) |
+                    (valid_annotations[:, 0] < segment_end_time) & (valid_annotations[:, 1] >= segment_end_time)
+                )
+                
+                input_str = f"{segment_start_time}{segment_end_time}{self._file_path}".encode()
+                id = hashlib.sha256(input_str).hexdigest()
+
+                segment_obj = Segment(
+                    signal_name=self._signal_name,
+                    anomalous=is_anomalous,
+                    start_timestamp=segment_start_time,
+                    end_timestamp=segment_end_time,
+                    data_file=self._file_path,
+                    patient_id=patient_id,
+                    annotators=[annotator],
+                    frequency=self._frequency,
+                    data=[],
+                    id=id,
+                    weight=0.0,
+                    anomalies_annotations=[]
                 )
 
-            return index_data
-
-        except FileNotFoundError:
-            raise FileNotFoundError("No such file or the file is missing an extension.")
-
-    def prepare_data_for_segments(self, segments: List[Segment]) -> None:
-        """Loads data for the specified segments and assigns frequency to them.
-
-        Args:
-            segments (List[Segment]): The list of segments to load data for.
-        """
-        try:
-            with h5py.File(self._file_path, 'r') as hdf:
-                all_data = hdf[f"waves/{self._mode}"]
-                for segment in segments:
-                    start_idx = np.searchsorted(
-                        self._start_times, segment.start_time, side="right") - 1
-                    end_idx = np.searchsorted(
-                        self._start_times, segment.end_time, side="left")
-
-                    for idx in range(start_idx, end_idx):
-                        data_range_start = self._start_times[idx]
-                        data_range_end = data_range_start + \
-                            self._lengths[idx] * self._intervals[idx]
-
-                        if (data_range_start, data_range_end) not in self._data:
-                            self._data[(data_range_start, data_range_end)] = all_data[
-                                self._index_data[idx]["startidx"]:self._index_data[idx]["startidx"] +
-                                self._lengths[idx]
-                            ]
-
-                    segment.frequency = self._frequencies[idx]
-        except FileNotFoundError:
-            raise FileNotFoundError("No such file or the file is missing an extension.")
-
-    def get_data_in_range(self, segment: Segment) -> np.ndarray:
-        """Retrieves data within the specified time range for a segment.
-
-        Args:
-            segment (Segment): The segment whose data needs to be retrieved.
-
-        Returns:
-            np.ndarray: The concatenated data within the specified time range.
-        """
-        start_time = segment.start_time
-        end_time = segment.end_time
-        result_data = [
-            data_slice[max(0, int((start_time - data_start) / self._intervals[0])):min(
-                data_slice.shape[0], int((end_time - data_start) / self._intervals[0]))]
-            for (data_start, data_end), data_slice in self._data.items()
-            if data_start <= end_time and data_end >= start_time
-        ]
-
-        segment.empty = not bool(result_data)
-        if segment.empty and not self._skip_empty:
-            raise EmptySegment("An empty segment has been detected.")
-
-        return np.nan_to_num(np.concatenate(result_data), nan=-99999) if result_data else np.array([])
-
-    @property
-    def artf_path(self) -> str:
-        """Returns the path to the ARTF file."""
-        return self._artf_path
-
-    @property
-    def file_path(self) -> str:
-        """Returns the path to the HDF5 file."""
-        return self._file_path
-
-    @property
-    def mode(self) -> str:
-        """Returns the mode."""
-        return self._mode
-
-
-
-
-class SingleFileExtractor:
-    """Extracts anomalous and normal segments from a single file.
-
-    Attributes:
-        file_path (str): Path to the HDF5 file. Always ends with ".hdf5"
-        mode (str): The mode to use for extracting data from the HDF5 file. Only use "abp" or "icp".
-        matching (bool): Whether to extract matching number of anomalous and normal segments or not.
-                         This option DOESN'T guarantee len(normal_segments) == len(anomalies),
-                         but rather len(normal_segments) <= len(anomalies).
-        matching_multiplier (int): Multiplier for matching anomalies. For example, a multiplier of 2
-                                   produces len(normal_segments) <= len(anomalies) * 2.
-        skip_empty (bool): If true, skips an empty segment instead of raising an EmptySegment exception.
-    
-    Example usage:
-    >>> extractor = SingleFileExtractor(FILE_PATH, "abp")
-
-    >>> normal_segments = extractor.get_normal()
-    >>> anomalous_segments = extractor.get_anomalies()
-    """
-
-    def __init__(self, file_path: str, mode: str, matching: bool = False, matching_multiplier: int = 1, skip_empty: bool = True) -> None:
-        self._signal = Signal(file_path, self._assign_artf_file_path(file_path), mode, skip_empty)
-        self._matching = matching
-        self._anomalies: List[Segment] = []
-        self._normal: List[Segment] = []
-        self._matching_multiplier = matching_multiplier
-
-    def _extract(self):
-        if self._matching:
-            self._extract_matching()
+                if is_anomalous:
+                    anomalous_segments.append(segment_obj)
+                else:
+                    good_segments.append(segment_obj)
         else:
-            self._extract_all()
+            is_anomalous = False
+            for i in range(num_segments):
+                segment_start_time = segment_start_times[i]
+                segment_end_time = segment_end_times[i]
 
-    @staticmethod
-    def _assign_artf_file_path(file_path: str) -> Path:
-        return Path(file_path).with_suffix(".artf")
+                input_str = f"{segment_start_time}{segment_end_time}{self._file_path}".encode()
+                id = hashlib.sha256(input_str).hexdigest()
 
-    def _get_anomaly_normal_segments(self) -> Tuple[List[Segment], List[Segment]]:
+                segment_obj = Segment(
+                    signal_name=self._signal_name,
+                    anomalous=is_anomalous,
+                    start_timestamp=segment_start_time,
+                    end_timestamp=segment_end_time,
+                    data_file=self._file_path,
+                    patient_id=patient_id,
+                    annotators=[annotator],
+                    frequency=self._frequency,
+                    data=[],
+                    id=id,
+                    weight=0.0,
+                    anomalies_annotations=[]
+                )
+
+                good_segments.append(segment_obj)
+
+        annotation_idx = f"Annotation n. {len(self._annotations)}"
+
+        self._annotations[annotation_idx] = Annotation(good_segments=good_segments, anomalies=anomalous_segments, annotator=annotator)
+    
+    def load_data(self, segments: List[Segment]) -> None:
+        """
+        Load actual data values for the given segments.
+        
+        Args:
+            segments: List of segments to load data for
+        """
+        for segment in segments:
+            segment_start_idx = int((segment.start_timestamp - self._starttime) // 1_000_000 * self._frequency)
+            segment_end_idx = int((segment.end_timestamp - self._starttime) // 1_000_000 * self._frequency) + 1
+            segment.data = self._raw_data[segment_start_idx:segment_end_idx]
+    
+    @property
+    def frequency(self) -> float:
+        """Get the sampling frequency of the signal."""
+        return self._frequency
+    
+    @property
+    def signal_name(self) -> str:
+        """Get the name of the signal."""
+        return self._signal_name
+    
+    @property
+    def length(self) -> int:
+        """Get the length of the signal data."""
+        return self._length
+    
+    @property
+    def starttime(self) -> int:
+        """Get the start time of the signal in microseconds."""
+        return self._starttime
+    
+    @property
+    def raw_data(self) -> np.ndarray:
+        """Get the raw signal data."""
+        return self._raw_data
+    
+    @property
+    def annotations(self) -> Dict[str, Annotation]:
+        """
+        Get all annotations for this signal.
+        
+        Raises:
+            ValueError: If the signal has not been annotated yet
+        
+        Returns:
+            Dictionary mapping annotation keys to Annotation objects
+        """
+        if not self._annotations:
+            raise ValueError("This signal has yet to be annotated.")
+        return self._annotations
+    
+    @property
+    def annotated(self) -> bool:
+        """Check if the signal has been annotated."""
+        if not self._annotations:
+            return False
+        return True
+
+class SingleFileExtractor(IExtractor):
+    """
+    Extractor for processing a single HDF5 file with signals and annotations.
+    
+    This class handles loading, annotating, and extracting data from a single HDF5 file,
+    which may contain multiple signals.
+    
+    Attributes:
+        _signals: List of Signal objects extracted from the file
+        _hdf5_file_path: Path to the HDF5 file
+        _hdf5_file_name: Filename of the HDF5 file
+        _hdf5_file_stem: Base name of the HDF5 file without extension
+    """
+    def __init__(self, hdf5_file_path: str) -> None:
+        """
+        Initialize a SingleFileExtractor for the specified HDF5 file.
+        
+        Args:
+            hdf5_file_path: Path to the HDF5 file to extract data from
+        """
+        self._signals: List[Signal] = []
+        self._hdf5_file_path = hdf5_file_path
+        self._hdf5_file_name = Path(hdf5_file_path).name
+        self._hdf5_file_stem = Path(hdf5_file_path).stem
+
+        self._load_signals(hdf5_file_path)
+
+    
+    def _load_signals(self, file_path: str) -> None:
+        """
+        Load all signals from the HDF5 file.
+        
+        Args:
+            file_path: Path to the HDF5 file
+            
+        Raises:
+            FileNotFoundError: If the file doesn't exist or has no extension
+        """
         try:
-            with open(self._signal.artf_path, 'r', encoding='ISO-8859-1') as xml_file:
+            with h5py.File(file_path, "r") as hdf:
+
+                file_path = self._hdf5_file_path
+                all_waves = hdf.get(f"waves")
+
+                for wave in all_waves:
+                    if not re.search(r"\.", wave):
+
+                        index_data = hdf.get(f"waves/{wave}.index")
+                        raw_data = np.array(hdf.get(f"waves/{wave}"))
+
+                        raw_data[raw_data == -99999] = np.nan
+                        
+
+                        if index_data is None:
+                            index_data = hdf[f"waves/{wave}"].attrs["index"]
+
+                        for i,item in enumerate(index_data):
+                            if i:
+                                wave = f"{wave}_{i-1}"
+                            self._signals.append(Signal(file_path, wave, 
+                                                       item[0], item[1], item[2], 
+                                                       item[3], raw_data))
+
+        except FileNotFoundError:
+            raise FileNotFoundError("No such file or the file is missing an extension.")
+    
+    def load_data(self, *segments: List[Segment]) -> None:
+        """
+        Load data for the given segments.
+        
+        Args:
+            *segments: Variable number of segment lists to load data for
+        """
+        segments = [segment for sublist in segments for segment in sublist]
+        segments_by_signal = defaultdict(list)
+        for segment in segments:
+            segments_by_signal[segment.signal_name].append(segment)
+
+        for signal_name, segments in segments_by_signal.items():
+            signal = next(signal for signal in self._signals if signal.signal_name == signal_name)
+            signal.load_data(segments)
+        
+    @property
+    def hdf5_file_stem(self) -> str:
+        """Get the base name of the HDF5 file without extension."""
+        return self._hdf5_file_stem
+    
+    def get_signal_names(self) -> List[str]:
+        """
+        Get the names of all signals in the file.
+        
+        Returns:
+            List of signal names
+        """
+        return [signal.signal_name for signal in self._signals]
+    
+    
+    def annotate(self, artf_file_path: str) -> None:
+        """
+        Annotate signals using an ARTF file.
+        
+        Args:
+            artf_file_path: Path to the ARTF annotation file
+            
+        Raises:
+            FileNotFoundError: If the ARTF file doesn't exist
+            ValueError: If the ARTF file is not associated with the provided HDF5 file
+        """
+        try:
+            with open(artf_file_path, "r", encoding="cp1250") as xml_file:
                 tree = ET.parse(xml_file)
         except FileNotFoundError:
             raise FileNotFoundError("No such ARTF file found.")
         
         root = tree.getroot()
-        modes = [f"SignalGroup[@Name='{self._signal.mode}']", "Global"]
 
-        anomalous_segments, normal_segments = [], []
+        annotator = root.find(".//Info").get("UserID")
+        associated_hdf5 = root.find(".//Info").get("HDF5Filename")
 
-        for mode in modes:
-            normal_start_unix = 0
-            for element in root.findall(f".//{mode}/Artefact"):
-                start_time_unix = self._unix_from_dt(element.get("StartTime"))
-                end_time_unix = self._unix_from_dt(element.get("EndTime"))
-                from_file = self._signal.file_path
-                patient = re.search(r"TBI_(\w+)", from_file).group(1).split('_')[0]
+        if not Path(associated_hdf5).name == self._hdf5_file_name:
+            raise ValueError("The ARTF file is not associated with the provided HDF5 file.")
 
-                anomalous_segments.append(Segment(start_time=start_time_unix, end_time=end_time_unix, file=from_file, patient_id=patient, empty=True))
+        for signal in self._signals:
 
-                if normal_start_unix:
-                    normal_end_unix = start_time_unix
-                    arr = np.linspace(normal_start_unix, normal_end_unix, int((normal_end_unix - normal_start_unix) / 10_000_000) + 1)
-                    normal_segments.extend(Segment(start_time=arr[i], end_time=arr[i + 1], file=from_file, patient_id=patient, empty=True) for i in range(len(arr) - 1))
-                
-                normal_start_unix = end_time_unix
+            annotation_times = []
 
-        return anomalous_segments, normal_segments
+            for element in root.findall(".//Global/Artefact"):
+                start_time_unix = unix_from_dt(element.get("StartTime"))
+                end_time_unix = unix_from_dt(element.get("EndTime"))
+                annotation_times.append((start_time_unix, end_time_unix))
 
-    def _extract_all(self) -> None:
-        """Extracts all anomalous and normal segments."""
-        anomalous_segments, normal_segments = self._get_anomaly_normal_segments()
-
-        for i, segments in enumerate([normal_segments, anomalous_segments]):
-            self._extract_data_for_segments(segments, anomaly=bool(i))
-
-    def _extract_matching(self) -> None:
-        """Extracts anomalies and a matching number of normal segments."""
-        anomalous_segments, normal_segments = self._get_anomaly_normal_segments()
-        normal_segments = normal_segments[:len(anomalous_segments) * self._matching_multiplier]
-
-        for i, segments in enumerate([normal_segments, anomalous_segments]):
-            self._extract_data_for_segments(segments, anomaly=bool(i))
-
-    def _extract_data_for_segments(self, segments: List[Segment], anomaly: bool = False) -> None:
-        target = self._anomalies if anomaly else self._normal
-        target[:] = segments
-        self._signal.prepare_data_for_segments(segments)
-        for segment in target:
-            segment.data = self._signal.get_data_in_range(segment)
-
-    def export_data(self, output_dir: str, export_format: str = "csv") -> None:
-        """Saves anomalous and normal segments as CSV or JSON in the specified output directory."""
-        self._extract()
-        anomaly_path, normal_path = Path(output_dir) / "anomalies", Path(output_dir) / "normal_segments"
-        anomaly_path.mkdir(parents=True, exist_ok=True)
-        normal_path.mkdir(parents=True, exist_ok=True)
-
-        base_filename = Path(self._signal.file_path).stem
-        anomaly_data = [{**segment.__dict__, 'data': segment.data.tolist()} for segment in self._anomalies]
-        normal_data = [{**segment.__dict__, 'data': segment.data.tolist()} for segment in self._normal]
-
-        if export_format.lower() == "json":
-            with open(anomaly_path / f"{base_filename}_anomalies.json", 'w') as f:
-                json.dump(anomaly_data, f, indent=4)
-            with open(normal_path / f"{base_filename}_normal.json", 'w') as f:
-                json.dump(normal_data, f, indent=4)
-        elif export_format.lower() == "csv":
-            if self._anomalies:
-                with open(anomaly_path / f"{base_filename}_anomalies.csv", 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=self._anomalies[0].__dict__.keys())
-                    writer.writeheader()
-                    writer.writerows(anomaly_data)
-            if self._normal:
-                with open(normal_path / f"{base_filename}_normal.csv", 'w', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=self._normal[0].__dict__.keys())
-                    writer.writeheader()
-                    writer.writerows(normal_data)
-        else:
-            raise ValueError(f"Unsupported format: {export_format}. Please choose 'json' or 'csv'.")
-
-    def get_frequency(self) -> int:
-        """Returns the frequency of the first anomalous or normal segment."""
-        if self._anomalies:
-            return self._anomalies[0].frequency
-        if self._normal:
-            return self._normal[0].frequency
-        return 0
-
-    @staticmethod
-    def _unix_from_dt(dt_string: str) -> int:
-        """Converts a datetime string to a Unix timestamp in microseconds."""
-        return int(datetime.datetime.strptime(dt_string, "%d/%m/%Y %H:%M:%S.%f").replace(tzinfo=datetime.timezone.utc).timestamp() * 1_000_000)
-
-    def get_anomalies(self) -> List[Segment]:
-        """Returns the extracted anomalies."""
-        self._extract()
-        return [segment for segment in self._anomalies if not segment.empty]
-
-    def get_normal(self) -> List[Segment]:
-        """Returns the extracted normal segments."""
-        self._extract()
-        return [segment for segment in self._normal if not segment.empty]
+            for element in root.findall(f".//SignalGroup[@Name='{signal.signal_name}']/Artefact"):
+                start_time_unix = unix_from_dt(element.get("StartTime"))
+                end_time_unix = unix_from_dt(element.get("EndTime"))
+                annotation_times.append((start_time_unix, end_time_unix))
+            
+            signal.add_annotation(annotation_times, annotator)
     
-    def return_hdf5_as_array(self) -> np.array:
-        """Loads and returns the entire dataset from the HDF5 file as a NumPy array.
+    def auto_annotate(self, optional_folder_path: Optional[str] = None) -> None:
+        """
+        Automatically annotate signals using available ARTF files.
+        
+        Args:
+            optional_folder_path: Optional path to look for ARTF files. If not provided,
+                                  uses the directory containing the HDF5 file.
+        """
+        if not optional_folder_path:
+            hdf5_dir = Path(self._hdf5_file_path).parent
+        else:
+            hdf5_dir = Path(optional_folder_path)
+
+        artf_files = [file for file in hdf5_dir.rglob("*.artf")]
+
+        for artf_file_path in artf_files:
+            if any(part.startswith("__") for part in Path(artf_file_path).parts):
+                continue
+
+            with open(artf_file_path, "r", encoding="cp1250") as xml_file:
+                tree = ET.parse(xml_file)
+            root = tree.getroot()
+
+            associated_hdf5 = root.find(".//Info").get("HDF5Filename")
+
+            if Path(associated_hdf5).name == self._hdf5_file_name:
+                self.annotate(artf_file_path)
+    
+    def get_raw_data(self, signal_name: str) -> np.ndarray:
+        """
+        Get raw data for a specific signal.
+        
+        Args:
+            signal_name: Name of the signal to retrieve data for
+            
+        Raises:
+            ValueError: If the signal name is not found in the signals
+            
+        Returns:
+            Raw signal data as a numpy array
+        """
+        signal_name = str(signal_name).lower()
+        if signal_name not in [signal.signal_name for signal in self._signals]:
+            raise ValueError(f"Signal {signal_name} not present in the signals")
+
+        data = {signal.signal_name: signal.raw_data for signal in self._signals}
+
+        return data.get(signal_name)
+    
+    def get_annotations(self, signal_name: str) -> Dict[str, Annotation]:
+        """
+        Get annotations for a specific signal.
+        
+        Args:
+            signal_name: Name of the signal to retrieve annotations for
+            
+        Raises:
+            ValueError: If the signal name is not found in the signals
+            
+        Returns:
+            Dictionary mapping annotation keys to Annotation objects
+        """
+        signal_name = str(signal_name).lower()
+        if signal_name not in [signal.signal_name for signal in self._signals]:
+            raise ValueError(f"Signal {signal_name} not present in the signals")
+        
+        annotations = {signal.signal_name: signal.annotations for signal in self._signals}
+        signal_annotations = annotations.get(signal_name)
+        
+        return signal_annotations
+    
+    def get_annotators(self, signal_name: str) -> Set[str]:
+        """
+        Get all annotators for a specific signal.
+        
+        Args:
+            signal_name: Name of the signal
+            
+        Raises:
+            ValueError: If the signal name is not found in the signals
+            
+        Returns:
+            Set of annotator names
+        """
+        signal_name = str(signal_name).lower()
+        if signal_name not in [signal.signal_name for signal in self._signals]:
+            raise ValueError(f"Signal {signal_name} not present in the signals")
+        
+        signal_annotations = next(signal.annotations for signal in self._signals if signal.signal_name == signal_name)
+        annotators = {segment.annotators[0] for annotation in signal_annotations.values() for segment in annotation.good_segments + annotation.anomalies}
+        
+        return annotators
+    
+    def extract(self, signal_name: str) -> Tuple[List[Segment], List[Segment]]:
+        """
+        Extract good and anomalous segments for a given signal.
+        
+        Args:
+            signal_name: Name of the signal to extract segments for
+            
+        Raises:
+            ValueError: If the signal name is not found in the signals
+            
+        Returns:
+            Tuple containing lists of good segments and anomalous segments
+        """
+        signal_name = str(signal_name).lower()
+        if signal_name not in [signal.signal_name for signal in self._signals]:
+            raise ValueError(f"Signal {signal_name} not present in the signals")
+        
+        signal_annotations = next(signal.annotations for signal in self._signals if signal.signal_name == signal_name)
+        
+        segment_dict: Dict[str, Segment] = {}
+
+        for annotation in signal_annotations.values():
+            for segment in annotation.good_segments + annotation.anomalies:
+                if segment.id in segment_dict:
+                    segment_dict[segment.id].annotators.extend(segment.annotators)
+                else:
+                    segment_dict[segment.id] = Segment(
+                        signal_name=segment.signal_name,
+                        anomalous=segment.anomalous,
+                        start_timestamp=segment.start_timestamp,
+                        end_timestamp=segment.end_timestamp,
+                        data_file=segment.data_file,
+                        patient_id=segment.patient_id,
+                        annotators=segment.annotators[:],
+                        frequency=segment.frequency,
+                        data=segment.data.copy(),
+                        id=segment.id,
+                        weight=segment.weight,
+                        anomalies_annotations=segment.anomalies_annotations
+                    )
+
+        for segment in segment_dict.values():
+            total_annotations = len(segment.annotators)
+            anomalous_count = 0
+
+            for annotation in signal_annotations.values():
+                for seg in annotation.anomalies:
+                    if segment.id == seg.id:
+                        anomalous_count += 1
+                        segment.anomalies_annotations.append(annotation.annotator)
+
+            if total_annotations > 0:
+                segment.weight = round(anomalous_count / total_annotations, 2)
+                segment.anomalous = anomalous_count > 0
+            
+            if not segment.anomalous:
+                segment.weight = 0.0
+
+        good_segments = [segment for segment in segment_dict.values() if not segment.anomalous]
+        anomalous_segments = [segment for segment in segment_dict.values() if segment.anomalous]
+        return good_segments, anomalous_segments
+    
+    def describe(self) -> str:
+        """
+        Generate a detailed description of the file and its signals.
         
         Returns:
-            np.ndarray: The full dataset from the HDF5 file.
+            A formatted string with information about the file and its signals
         """
-        try:
-            with h5py.File(self._signal.file_path, 'r') as hdf:
-                dataset = hdf[f"waves/{self._signal.mode}"]
-                entire_data = np.nan_to_num(np.array(dataset), nan=-99999)
-            return entire_data
+        description = [f"\n~~Signal File Description~~\n"]
+        description.append(f" File Name: {self._hdf5_file_stem}\n")
 
-        except FileNotFoundError:
-            raise FileNotFoundError("No such file or the file is missing an extension.")
+        for signal in self._signals:
+            signal_info = f" Signal Name: {signal.signal_name}\n"
+            signal_info += f"   Frequency: {signal.frequency} Hz\n"
+            signal_info += f"   Start Time: {dt_from_unix(signal.starttime)}\n"
+            signal_info += f"   End Time: {dt_from_unix(signal.starttime + int(signal.length * 1_000_000 / signal.frequency))}\n"
+            signal_info += f"   Length: {(signal.length / signal.frequency / 3600):.2f}h ({signal.length} samples)\n"
+            signal_info += f"   Annotated: {'Yes' if signal.annotated else 'No'}\n"
 
 
-class FolderExtractor:
-    """Extracts anomalous and normal segments from all files in a folder.
+            if signal.annotated:
+                annotations = signal.annotations
+                for annotation_name, annotation in annotations.items():
+                    signal_info += f"\n     {annotation_name} by {annotation.annotator} - Good Segments: {len(annotation.good_segments)}, Anomalies: {len(annotation.anomalies)}\n"
 
-    Attributes:
-        folder_path (str): Path to the folder containing the files, also searches subfolders for files.
-        mode (str): The mode to use for extracting data from the HDF5 files. Only use "abp" or "icp".
-        matching (bool): Whether to extract matching number of anomalous and normal segments or not.
-                         This option DOESN'T guarantee len(normal_segments) == len(anomalies),
-                         but rather len(normal_segments) <= len(anomalies).
-        matching_multiplier (int): Multiplier for matching anomalies. For example, a multiplier of 2
-                                   produces len(normal_segments) <= len(anomalies) * 2.
-        skip_empty (bool): If true, skips an empty segment instead of raising an EmptySegment exception.
+                    annotators, consensus_matrix = self.consensus_matrix(signal.signal_name)
+                    annotator_index = annotators.index(annotation.annotator)
+                    
+                    for other_annotation_name, other_annotation in annotations.items():
+                        if annotation_name != other_annotation_name:
+                            other_annotator_index = annotators.index(other_annotation.annotator)
+                            consensus_percentage = consensus_matrix[annotator_index, other_annotator_index] * 100
+                            signal_info += f"       Consensus with {other_annotation_name}: {consensus_percentage:.2f}%\n"
+
+            description.append(signal_info)
+
+        return "\n".join(description)
     
-    Example usage:
-    >>> extractor = FolderExtractor(FOLDER_PATH)
-    >>> anomalous_segments, normal_segments = extractor.extract_all()
-
-
-    >>> extractor = FolderExtractor(FOLDER_PATH)
-    >>> anomalous_segments_patient_dictionary, normal_segments_patient_dictionary = extractor.extract_merged()
-
-    """
-
-    def __init__(self, folder_path: str, mode: str, matching: bool = False, matching_multiplier: int = 1, skip_empty: bool = True) -> None:
-        self._folder_path = folder_path
-        self._mode = mode
-        self._matching = matching
-        self._matching_multiplier = matching_multiplier
-        self._skip_empty = skip_empty
-
-        if not os.path.exists(self._folder_path):
-            raise FileNotFoundError("Invalid folder path.")
-
-    def extract_all(self) -> Tuple[List[Segment], List[Segment]]:
-        """Extracts anomalous and normal segments from all files in the folder.
-        Returns:
-            Tuple[List[Segment], List[Segment]]: A tuple containing arrays of anomalous and normal segments.
+    def consensus_matrix(self, signal_name: str, include_good: bool = True) -> Tuple[List[str], np.ndarray]:
         """
-        anomalies, normal, frequencies = [], [], set()
-
-        for root, _, files in os.walk(self._folder_path):
-            hdf5_files = [f for f in files if f.endswith(".hdf5")]
-            artf_files = {f.replace(".artf", ""): f for f in files if f.endswith(".artf")}
-
-            for hdf5_file in hdf5_files:
-                file_name = hdf5_file.replace(".hdf5", "")
-                if file_name in artf_files:
-                    extractor = SingleFileExtractor(
-                        file_path=os.path.join(root, hdf5_file),
-                        mode=self._mode,
-                        matching=self._matching,
-                        matching_multiplier=self._matching_multiplier,
-                        skip_empty=self._skip_empty,
-                    )
-
-                    anomalies.extend(extractor.get_anomalies())
-                    normal.extend(extractor.get_normal())
-
-                    frequency = extractor.get_frequency()
-                    if frequency:
-                        frequencies.add(frequency)
-
-        if len(frequencies) > 1:
-            raise FrequencyMismatchError(f"More than one frequency found in folder: {frequencies}")
-
-        return anomalies, normal
-
-    def extract_merged(self) -> Tuple[Dict[str, List[Segment]], Dict[str, List[Segment]]]:
-        """Extracts and merges anomalies and normal segments for each patient.
-
-        Returns:
-            Tuple[Dict[str, List[Segment]], Dict[str, List[Segment]]]: A tuple containing dictionaries of anomalous and normal segments grouped by patient ID.
-        """
-        patient_data_artf: Dict[str, List[Segment]] = {}
-        patient_data_normal: Dict[str, List[Segment]] = {}
-        frequencies: Set[float] = set()
-
-        patient_pattern = re.compile(r"TBI_(\w+)")
-
-        for root, dirs, files in os.walk(self._folder_path):
-            hdf5_files = [file for file in files if file.endswith(".hdf5")]
-            artf_files = {file.replace(".artf", ""): file for file in files if file.endswith(".artf")}
-
-            for hdf5_file in hdf5_files:
-                match = patient_pattern.match(hdf5_file)
-                if match:
-                    patient_id = match.group(1).split('_')[0]
-
-                    file_name = hdf5_file.replace(".hdf5", "")
-                    if file_name in artf_files:
-                        hdf5_path = os.path.join(root, hdf5_file)
-
-                        extractor = SingleFileExtractor(
-                            file_path=hdf5_path,
-                            mode=self._mode,
-                            matching=self._matching,
-                            matching_multiplier=self._matching_multiplier,
-                            skip_empty=self._skip_empty
-                        )
-
-                        anomalies: List[Segment] = extractor.get_anomalies()
-                        normals: List[Segment] = extractor.get_normal()
-
-                        frequency: float = extractor.get_frequency()
-                        if frequency:
-                            frequencies.add(frequency)
-
-                        if patient_id not in patient_data_artf:
-                            patient_data_artf[patient_id] = []
-                        if patient_id not in patient_data_normal:
-                            patient_data_normal[patient_id] = []
-
-                        patient_data_artf[patient_id].extend(anomalies)
-                        patient_data_normal[patient_id].extend(normals)
-
-                    else:
-                        print(f"No ARTF file found for {file_name} in {root}")
-
-        if len(frequencies) > 1:
-            raise FrequencyMismatchError(f"More than one frequency found in folder: {frequencies}")
-
-        return patient_data_artf, patient_data_normal
-
-    
-    
-    def export_data(self, output_dir: str, export_format: str = "csv") -> None:
-        """Exports the extracted data for each file.
-
+        Compute a consensus matrix between annotators for a signal.
+        
         Args:
-            output_dir (str): Path to the output folder where the segments should be saved.
-            format (str): Format in which to save the files, either 'csv' or 'json'. Default is 'csv'.
-        """
-        output_dir_path = Path(fr"{output_dir}/{self._mode}")
-        output_dir_path.mkdir(parents=True, exist_ok=True)
-
-        for root, _, files in os.walk(self._folder_path):
-            hdf5_files = [f for f in files if f.endswith(".hdf5")]
-            artf_files = {f.replace(".artf", ""): f for f in files if f.endswith(".artf")}
-
-            for hdf5_file in hdf5_files:
-                file_name = hdf5_file.replace(".hdf5", "")
-                if file_name in artf_files:
-                    extractor = SingleFileExtractor(
-                        file_path=os.path.join(root, hdf5_file),
-                        mode=self._mode,
-                        matching=self._matching,
-                        matching_multiplier=self._matching_multiplier,
-                        skip_empty=self._skip_empty,
-                    )
-                    extractor.export_data(output_dir_path, export_format)
-
-    def return_hdf5_as_array(self) -> Dict[str, np.array]:
-        """Extracts anomalous and normal segments from all files in the folder.
+            signal_name: Name of the signal
+            include_good: Whether to include good segments in the consensus calculation
+            
         Returns:
-            Tuple[List[Segment], List[Segment]]: A tuple containing arrays of anomalous and normal segments.
+            Tuple containing a list of annotator names and a consensus matrix
         """
+        signal_annotations = self.get_annotations(signal_name)
+        annotators = sorted({segment.annotators[0] for annotation in signal_annotations.values()
+                            for segment in annotation.good_segments + annotation.anomalies})
 
-        data_collector = {}
+        annotator_segments = {annotator: [] for annotator in annotators}
+        for annotation in signal_annotations.values():
+            annotator_segments[annotation.annotator].extend(annotation.good_segments + annotation.anomalies)
 
-        for root, _, files in os.walk(self._folder_path):
-            hdf5_files = [f for f in files if f.endswith(".hdf5")]
+        consensus_matrix = np.zeros((len(annotators), len(annotators)))
 
-            for hdf5_file in hdf5_files:
-                file_name = hdf5_file.replace(".hdf5", "")
+        for i, annotator_i in enumerate(annotators):
+            annotation_i = next(annotation for annotation in sorted(signal_annotations.values(), key=lambda a: a.annotator)
+                                if annotation.annotator == annotator_i)
+            
+            for j, annotator_j in enumerate(annotators):
+                annotation_j = next(annotation for annotation in sorted(signal_annotations.values(), key=lambda a: a.annotator)
+                                    if annotation.annotator == annotator_j)
 
-                extractor = SingleFileExtractor(
-                        file_path=os.path.join(root, hdf5_file),
-                        mode=self._mode,
-                        matching=self._matching,
-                        matching_multiplier=self._matching_multiplier,
-                        skip_empty=self._skip_empty,
-                    )
+                if i == j:
+                    consensus_matrix[i, j] = 1.0
+                else:
+                    consensus_segments = []
+
+                    for segment in sorted(annotation_i.anomalies, key=lambda s: s.id):
+                        for other_segment in sorted(annotation_j.anomalies, key=lambda s: s.id):
+                            if segment.id == other_segment.id:
+                                consensus_segments.append(segment)
+                                break
+
+                    if include_good:
+                        other_segment_ids = {other_segment.id for other_segment in sorted(annotation_j.good_segments, key=lambda s: s.id)}
+                        for segment in sorted(annotation_i.good_segments, key=lambda s: s.id):
+                            if segment.id in other_segment_ids:
+                                consensus_segments.append(segment)
+
+                    total_segments_i = len(annotation_i.anomalies)
+                    total_segments_j = len(annotation_j.anomalies)
+                    if include_good:
+                        total_segments_i += len(annotation_i.good_segments)
+                        total_segments_j += len(annotation_j.good_segments)
+
+                    intersection = len(consensus_segments)
+                    union = total_segments_i + total_segments_j - intersection
+
+                    if union == 0:
+                        consensus_percentage = 1.0
+                    else:
+                        consensus_percentage = intersection / union
+
+                    consensus_matrix[i, j] = consensus_percentage
+
+        return annotators, consensus_matrix
+
+    
+    def annotated_anomalies(self, signal_name: str) -> Dict[str, int]:
+        """
+        Get the count of anomalies annotated by each annotator for a signal.
+        
+        Args:
+            signal_name: Name of the signal
+            
+        Returns:
+            Dictionary mapping annotator names to their anomaly counts
+        """
+        signal_annotations = self.get_annotations(signal_name)
+        annotator_anomalies_count = defaultdict(int)
+        for annotation in signal_annotations.values():
+            for segment in annotation.anomalies:
+                for annotator in segment.annotators:
+                    annotator_anomalies_count[annotator] += 1
+        return dict(annotator_anomalies_count)    
+    
+    def export_to_csv(self, optional_folder_path: Optional[str] = None) -> None:
+        """
+        Export data to CSV format.
+        
+        Args:
+            optional_folder_path: Optional path to save the file. If not provided,
+                                  uses the current working directory.
+        """
+        if not optional_folder_path:
+            working_dir = os.getcwd()
+            optional_folder_path = working_dir
+        
+        output_file = os.path.join(optional_folder_path, f"{self._hdf5_file_stem}.csv")
+
+        with open(output_file, "w") as f:
+            f.write("signal_name,weight,anomalous,data\n")
+            for signal in self._signals:
+                if not signal.annotated:
+                    print(f"Signal {signal.signal_name} is not annotated. Skipping...")
+                    continue
                 
-                hdf5_array = extractor.return_hdf5_as_array()
+                good_segments, anomalous_segments = self.extract(signal.signal_name)
 
-                if data_collector.get(file_name) is None:
-                    data_collector[file_name] = hdf5_array
-                elif not np.all(data_collector.get(file_name) == hdf5_array):
-                    print(f"A file with the same name as {file_name} was already loaded, skipping the file.")
+                self.load_data(good_segments, anomalous_segments)
 
-        return data_collector
+                for segment in good_segments + anomalous_segments:
+                    f.write(f'{signal.signal_name},{segment.weight},{segment.anomalous},"{segment.data.tolist()}"\n')
+
+
+class FolderExtractor(IExtractor):
+    """
+    Extractor for processing a folder of HDF5 files with signals and annotations.
+    
+    This class handles loading, annotating, and extracting data from multiple HDF5 files
+    in a specified folder path.
+    
+    Attributes:
+        _folder_path: Path to the folder containing HDF5 files
+        _extractors: List of SingleFileExtractor objects for each HDF5 file
+    """
+    def __init__(self, folder_path: str) -> None:
+        """
+        Initialize a FolderExtractor for the specified folder.
+        
+        Args:
+            folder_path: Path to the folder containing HDF5 files
+            
+        Raises:
+            ValueError: If the path is to a single HDF5 file instead of a folder
+        """
+        if folder_path.endswith(".hdf5"):
+            raise ValueError("Please use SingleFileExtractor for single HDF5 files.")
+
+        self._folder_path = folder_path
+        self._extractors: List[SingleFileExtractor] = []
+
+        self._load_files()
+    
+    def _load_files(self) -> None:
+        """
+        Load all HDF5 files in the folder and create extractors for each of them.
+        """
+        self._extractors = [
+            SingleFileExtractor(os.path.join(root, file))
+            for root, _, files in os.walk(self._folder_path)
+            for file in files if file.endswith(".hdf5")
+        ]
+    
+    def load_data(self, *segments: List[Segment]) -> None:
+        """
+        Load data for the given segments from their respective files.
+        
+        Args:
+            *segments: Variable number of segment lists to load data for
+        """
+        segments = [segment for sublist in segments for segment in sublist]
+        segments_by_file = defaultdict(list)
+        for segment in segments:
+            segments_by_file[segment.data_file].append(segment)
+
+        for data_file, segments in segments_by_file.items():
+            extractor = next(extractor for extractor in self._extractors if extractor._hdf5_file_path == data_file)
+            extractor.load_data(segments)
+    
+    def auto_annotate(self, optional_folder_path: Optional[str] = None) -> None:
+        """
+        Automatically annotate signals in all files using available annotation files.
+        
+        Args:
+            optional_folder_path: Optional path to look for annotation files. If not provided,
+                                  uses the folder containing the HDF5 files.
+        """
+        if not optional_folder_path:
+            optional_folder_path = self._folder_path
+
+        for extractor in self._extractors:
+            extractor.auto_annotate(optional_folder_path)
+    
+    def get_raw_data(self, signal_name: str) -> Dict[str, np.ndarray]:
+        """
+        Get raw data for a specific signal from all files.
+        
+        Args:
+            signal_name: Name of the signal to retrieve data for
+            
+        Returns:
+            Dictionary mapping file names to raw signal data arrays
+        """
+        data = {extractor.hdf5_file_stem: extractor.get_raw_data(signal_name) for extractor in self._extractors}
+
+        return data
+    
+    def get_signal_names(self) -> Dict[str, Any]:
+        """
+        Get the names of all signals in all files, categorized as consistent and outliers.
+        
+        Returns:
+            Dictionary with 'consistent' signals (present in all files) and 'outliers'
+        """
+        signals_dict = {extractor.hdf5_file_stem: extractor.get_signal_names() for extractor in self._extractors}
+        consistent_signals = set.intersection(*[set(signals) for signals in signals_dict.values()])
+        outliers = {extractor: list(set(signals_dict[extractor]) - consistent_signals) for extractor in signals_dict.keys() if set(signals_dict[extractor]) - consistent_signals}
+        
+        signals = {
+            "consistent": list(consistent_signals),
+            "outliers": outliers
+        }
+        return signals
+    
+    def get_files(self) -> List[str]:
+        """
+        Get the base names of all HDF5 files in the folder.
+        
+        Returns:
+            List of file names without extensions
+        """
+        return [extractor.hdf5_file_stem for extractor in self._extractors]
+    
+    def get_annotations(self, signal_name: str) -> List[Dict[str, Annotation]]:
+        """
+        Get annotations for a specific signal from all files.
+        
+        Args:
+            signal_name: Name of the signal to retrieve annotations for
+            
+        Returns:
+            List of annotation dictionaries, one per file
+        """
+        annotations = [extractor.get_annotations(signal_name) for extractor in self._extractors]
+        
+        return annotations
+    
+    def get_annotators(self, signal_name: str) -> Dict[str, Any]:
+        """
+        Get all annotators for a specific signal, categorized as consistent and outliers.
+        
+        Args:
+            signal_name: Name of the signal
+            
+        Returns:
+            Dictionary with 'consistent' annotators (present in all files) and 'outliers'
+        """
+        annotators_dict = {extractor.hdf5_file_stem: extractor.get_annotators(signal_name) for extractor in self._extractors}
+        consistent_annotators = set.intersection(*[set(annotators) for annotators in annotators_dict.values()])
+        outliers = {extractor: list(set(annotators_dict[extractor]) - consistent_annotators) for extractor in annotators_dict.keys() if set(annotators_dict[extractor]) - consistent_annotators}
+        
+        annotators = {
+            "consistent": list(consistent_annotators),
+            "outliers": outliers
+        }
+
+        return annotators
+    
+    def extract(self, signal_name: str) -> Tuple[List[Segment], List[Segment]]:
+        """
+        Extract good and anomalous segments for a given signal from all files.
+        
+        Args:
+            signal_name: Name of the signal to extract segments for
+            
+        Returns:
+            Tuple containing lists of good segments and anomalous segments
+        """
+        good_segments: List[Segment] = []
+        anomalous_segments: List[Segment] = []
+        for extractor in self._extractors:
+            try:
+                good, an = extractor.extract(signal_name)
+                good_segments.extend(good)
+                anomalous_segments.extend(an)
+            except ValueError as e:
+                print(f"Skipping signal {signal_name} of {extractor.hdf5_file_stem}: {e}")
+        
+        segment_ids = set()
+        duplicate_segments = []
+
+        for segment in good_segments + anomalous_segments:
+            if segment.id in segment_ids:
+                duplicate_segments.append(segment)
+            else:
+                segment_ids.add(segment.id)
+
+        if duplicate_segments:
+            print(f"Found {len(duplicate_segments)} duplicate segments with the same ID.")
+        
+        return good_segments, anomalous_segments
+    
+    def describe(self, output_file: Optional[str] = None) -> str:
+        """
+        Generate a detailed description of all files and their signals.
+        
+        Args:
+            output_file: Optional path to save the description to a file
+            
+        Returns:
+            A formatted string with information about all files and their signals
+        """
+        description = []
+        for extractor in self._extractors:
+            description.append(extractor.describe())
+        
+        description_str = "\n".join(description)
+        
+        if output_file:
+            output_dir = os.path.dirname(output_file)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            with open(output_file, mode="w", encoding="cp1250") as f:
+                f.write(description_str)
+        
+        return description_str
+    
+    def consensus_matrix(self, signal_name: str, include_good: bool = True) -> Tuple[List[str], np.ndarray]:
+        """
+        Compute an average consensus matrix between annotators across all files.
+        
+        Args:
+            signal_name: Name of the signal
+            include_good: Whether to include good segments in the consensus calculation
+            
+        Returns:
+            Tuple containing a list of annotator names and a consensus matrix
+        """
+        consensus_dict = defaultdict(list)
+        
+        for extractor in self._extractors:
+            annotators, consensus_matrix = extractor.consensus_matrix(signal_name, include_good)
+            for i, annotator_i in enumerate(annotators):
+                for j, annotator_j in enumerate(annotators):
+                    consensus_dict[(annotator_i, annotator_j)].append(consensus_matrix[i, j])
+        
+        mean_consensus_dict = {}
+        for key, values in consensus_dict.items():
+            mean_consensus_dict[key] = np.mean(values)
+        
+        unique_annotators = list(set([key[0] for key in mean_consensus_dict.keys()] + [key[1] for key in mean_consensus_dict.keys()]))
+        unique_annotators.sort()
+        
+        consensus_matrix = np.full((len(unique_annotators), len(unique_annotators)), -1.0)
+        
+        for (annotator_i, annotator_j), mean_value in mean_consensus_dict.items():
+            i = unique_annotators.index(annotator_i)
+            j = unique_annotators.index(annotator_j)
+            consensus_matrix[i, j] = mean_value
+        
+        return unique_annotators, consensus_matrix
+    
+    def annotated_anomalies(self, signal_name: str) -> Dict[str, int]:
+        """
+        Get the total count of anomalies annotated by each annotator across all files.
+        
+        Args:
+            signal_name: Name of the signal
+            
+        Returns:
+            Dictionary mapping annotator names to their total anomaly counts
+        """
+        final_count = defaultdict(int)
+        for extractor in self._extractors:
+            extractor_anomalies = extractor.annotated_anomalies(signal_name)
+            for annotator, count in extractor_anomalies.items():
+                final_count[annotator] += count
+        return dict(final_count)
+    
+    def export_to_csv(self, folder_path: str) -> None:
+        """
+        Export data from all files to separate CSV files.
+        
+        Args:
+            optional_folder_path: Optional path to save the CSV files. If not provided,
+                                  uses the folder containing the HDF5 files.
+        """
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+
+        for extractor in self._extractors:
+            extractor.export_to_csv(folder_path)
+
+
+if __name__ == "__main__":
+    """
+    Main execution block for testing the loader functionality.
+    
+    This section demonstrates how to use the FolderExtractor to:
+    1. Load a dataset from a folder
+    2. Auto-annotate signals using annotation files
+    3. Extract and load segments
+    4. Access segment weights and descriptions
+    """
+    # Example usage of the FolderExtractor
+    dataset_path: str = "/media/DATA/data/DATASETS/2024-05-10/dataset_0"
+    annotations_path: str = "/media/DATA/revised_annotations"
+    
+    # Create a FolderExtractor for the dataset
+    ex: FolderExtractor = FolderExtractor(dataset_path)
+    
+    # Auto-annotate using annotation files from a specific path
+    ex.auto_annotate(annotations_path)
+    
+    # Extract good and anomalous segments for the 'icp' signal
+    good_segments, anomalous_segments = ex.extract(signal_name="icp")
+    print(f"Found {len(good_segments)} good segments and {len(anomalous_segments)} anomalous segments")
+    
+    # Load the data for anomalous segments
+    ex.load_data(anomalous_segments)
+
+    # Display segment weights sorted in descending order
+    print(f"Segment weights (sorted): {sorted([seg.weight for seg in anomalous_segments], reverse=True)}")
+    
+    # Print a detailed description of the third-to-last anomalous segment
+    print(anomalous_segments[-3].describe())
+
