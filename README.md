@@ -177,7 +177,7 @@ extractor.export_to_csv("output_directory")
 
 ## Command-line Tools
 
-The repository includes several command-line tools for common tasks:
+The repository includes several command-line tools:
 
 ### anomalies.py
 Display information about anomalies in an HDF5 file:
