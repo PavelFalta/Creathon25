@@ -4,6 +4,8 @@ A Python toolkit for processing, analyzing and annotating biomedical signal data
 
 ![Example Segment](screenshots/example.png)
 
+> **Note for non-Python users**: If you prefer not to code in Python, you can use the `extract.py` script to export all segments to CSV format, which can then be imported into any data analysis tool of your choice. See the [extract.py](#extractpy) section for details.
+
 ## Features
 
 - Load and process biomedical signals from HDF5 files
