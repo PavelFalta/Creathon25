@@ -310,14 +310,14 @@ This tool:
 - Summarizes annotation information if available
 
 ### export.py
-Extracts segments from the entire dataset and exports them to CSV. You need to supply folder path and path to a folder with annotations:
+Exports segments from the entire dataset and exports them to CSV. You need to supply folder path and path to a folder with annotations:
 
 ```bash
 python export.py -f example_data/ -a example_data/ -o out
 ```
 
 This tool:
-- Extracts both normal and anomalous segments of all signals in the following format:
+- Exports both normal and anomalous segments of all signals in the following format:
 ```
 <signal_name>_<weight>_<id>.csv
 ```

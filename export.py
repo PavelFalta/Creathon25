@@ -29,7 +29,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""
-        HDF5 Extract Tool.
+        HDF5 Export Tool.
         
         Exports signal segments from an folder containing HDF5 files and saves them to csv format.
         """)
