@@ -1,5 +1,7 @@
 # Creathon HDF5 Utils
 
+> **TLDR**: The library follows a simple workflow: initialize an extractor → load annotations → extract segments → load data → process/export. See [General Dataflow](#general-dataflow) for a quick start.
+
 A Python toolkit for processing, analyzing and annotating biomedical signal data stored in HDF5 + ARTF files for segment extraction.
 
 ![Example Segment](screenshots/example.png)
@@ -20,7 +22,7 @@ A Python toolkit for processing, analyzing and annotating biomedical signal data
 1. Clone and enter the repository:
 ```bash
 git clone https://github.com/PavelFalta/Creathon25.git
-cd creathon
+cd Creathon25
 ```
 
 2. Create and activate Python virtualenv:
@@ -40,7 +42,7 @@ pip install -r requirements.txt
 1. Clone and enter the repository:
 ```
 git clone https://github.com/PavelFalta/Creathon25.git
-cd creathon
+cd Creathon25
 ```
 
 2. Create and activate Python virtual environment:
@@ -72,6 +74,52 @@ The library provides two main classes for working with signal data:
 - `FolderExtractor`: For processing multiple HDF5 files in a directory
 
 ## Example Usage
+
+### General Dataflow
+
+When working with the library, you typically follow these steps:
+
+1. **Initialize an Extractor**
+   ```python
+   from lib.loader import SingleFileExtractor, FolderExtractor
+
+   # For single file
+   extractor = SingleFileExtractor("path/to/file.hdf5")
+   
+   # Or for multiple files
+   extractor = FolderExtractor("path/to/directory/")
+   ```
+
+2. **Load Annotations**
+   ```python
+   # Automatically find and load annotations in the parent folder.
+   # If you wish to annotate with files from elsewhere, you will need to supply the folder path.
+   extractor.auto_annotate()
+   ```
+
+3. **Extract Segments**
+   ```python
+   # Get segments for a specific signal
+   good_segments, anomalous_segments = extractor.extract("signal_name")
+   ```
+
+4. **Load Data** (if needed)
+   ```python
+   # Load actual signal data for segments.
+   # If you don't load the data, you will have empty lists instead of the data. This is done so that you only load the actual data you need into memory.
+   extractor.load_data(good_segments, anomalous_segments)
+   ```
+
+5. **Process or Export**
+   ```python
+   # Export to CSV
+   extractor.export_to_csv("output_directory")
+   
+   # Or work with segments directly
+   for segment in segments:
+       # Process segment.data
+       pass
+   ```
 
 ### Working with a Single File
 
@@ -205,41 +253,16 @@ This tool:
 - Summarizes annotation information if available
 
 ### extract.py
-Extracts signal segments from the entire dataset and exports them to CSV. You need to supply folder path and path to a folder with annotations:
+Extracts segments from the entire dataset and exports them to CSV. You need to supply folder path and path to a folder with annotations:
 
 ```bash
 python extract.py -f example_data/ -a example_data/ -o out
 ```
 
 This tool:
-- Extracts both normal and anomalous segments
-- Can balance the dataset by limiting the number of samples per class
-- Supports multiple output formats (NumPy text files, CSV)
-
-## ARTF File Format
-
-The ARTF file uses XML format to store anomaly annotations:
-
-```xml
-<?xml version="1.0" ?>
-<ICMArtefacts>
-    <Global>
-        <Artefact StartTime="01/01/1970 00:00:05.000"
-                  EndTime="01/01/1970 00:00:15.000"/>
-    </Global>
-
-    <SignalGroup Name="icp">
-        <Artefact StartTime="01/01/1970 00:00:15.000"
-                  EndTime="01/01/1970 00:00:25.000"/>
-    </SignalGroup>
-
-    <SignalGroup Name="art">
-        <Artefact StartTime="01/01/1970 00:00:25.000"
-                  EndTime="01/01/1970 00:00:35.000"/>
-    </SignalGroup>
-
-    <Info HDF5Filename="example.hdf5" UserID="annotator1"/>
-</ICMArtefacts>
+- Extracts both normal and anomalous segments of all signals in the following format:
+```
+<signal_name>_<weight>_<id>.csv
 ```
 
 ## Notes

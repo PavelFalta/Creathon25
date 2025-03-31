@@ -24,6 +24,8 @@ def main(args):
 
     extractor.export_to_csv(output_dir)
 
+    print(f"Number of exported segments in the output directory: {len(os.listdir(output_dir))}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="""
