@@ -158,7 +158,7 @@ class Segment:
         patient_id: Identifier of the patient this segment belongs to
         annotators: List of annotators who have annotated this segment
         frequency: Sampling frequency of the signal in Hz
-        data: Array of signal values
+        data: Array of signal values. Empty until `load_data` is called.
         id: Unique identifier for the segment
         weight: Weight value representing annotator consensus (0.0-1.0)
         anomalies_annotations: List of annotators who marked this segment as anomalous

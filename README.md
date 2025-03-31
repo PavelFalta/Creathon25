@@ -6,7 +6,7 @@ A Python toolkit for processing, analyzing and annotating biomedical signal data
 
 ![Example Segment](screenshots/example.png)
 
-> **Note for non-Python users**: If you prefer not to code in Python, you can use the `extract.py` script to export all segments to CSV format, which can then be imported into any data analysis tool of your choice. See the [extract.py](#extractpy) section for details.
+> **Note for non-Python users**: If you prefer not to code in Python, you can use the `export.py` script to export all segments to CSV format, which can then be imported into any data analysis tool of your choice. See the [export.py](#exportpy) section for details.
 
 ## Features
 
@@ -309,11 +309,11 @@ This tool:
 - Provides statistics about signal values
 - Summarizes annotation information if available
 
-### extract.py
+### export.py
 Extracts segments from the entire dataset and exports them to CSV. You need to supply folder path and path to a folder with annotations:
 
 ```bash
-python extract.py -f example_data/ -a example_data/ -o out
+python export.py -f example_data/ -a example_data/ -o out
 ```
 
 This tool:

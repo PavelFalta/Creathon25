@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Extract Tool - Exports signal segments from HDF5 files
+Export Tool - Exports signal segments from HDF5 files
 
-This script extracts normal and anomalous segments from a signal in an HDF5 file
-and exports them to various formats (CSV, NumPy text files).
+This script exports normal and anomalous segments from a signal in an HDF5 file
+and saves them to csv format.
 """
 
 from lib.loader import FolderExtractor
@@ -31,7 +31,7 @@ if __name__ == "__main__":
         description="""
         HDF5 Extract Tool.
         
-        Extracts signal segments from an folder containing HDF5 files and saves them to csv format.
+        Exports signal segments from an folder containing HDF5 files and saves them to csv format.
         """)
     
     parser.add_argument('-f', type=str, 
