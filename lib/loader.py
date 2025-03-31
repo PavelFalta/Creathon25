@@ -334,7 +334,7 @@ class Signal:
                     patient_id=patient_id,
                     annotators=[annotator],
                     frequency=self._frequency,
-                    data=[],
+                    data=np.array([]),
                     id=id,
                     weight=0.0,
                     anomalies_annotations=[]
@@ -362,7 +362,7 @@ class Signal:
                     patient_id=patient_id,
                     annotators=[annotator],
                     frequency=self._frequency,
-                    data=[],
+                    data=np.array([]),
                     id=id,
                     weight=0.0,
                     anomalies_annotations=[]

@@ -73,6 +73,63 @@ The library provides two main classes for working with signal data:
 - `SingleFileExtractor`: For processing a single HDF5 file with its corresponding `.artf` file
 - `FolderExtractor`: For processing multiple HDF5 files in a directory
 
+### Segment Structure
+
+Each extracted segment is represented by a `Segment` dataclass with the following attributes:
+
+```python
+@dataclass
+class Segment:
+    # Basic information
+    signal_name: str         # Name of the signal this segment belongs to
+    patient_id: str          # Identifier of the patient this segment belongs to
+    frequency: float         # Sampling frequency of the signal in Hz
+    
+    # Timing information
+    start_timestamp: int     # Start time in microseconds (Unix timestamp)
+    end_timestamp: int       # End time in microseconds (Unix timestamp)
+    
+    # Data and file information
+    data: np.ndarray        # Array of signal values (empty until load_data is called)
+    data_file: str          # Path to the file containing the segment data
+    
+    # Annotation information
+    anomalous: bool         # Boolean indicating if this segment contains an anomaly
+    annotators: List[str]   # List of annotators who have annotated this segment
+    anomalies_annotations: List[str]  # List of annotators who marked this segment as anomalous
+    weight: float           # Weight value representing annotator consensus (0.0-1.0)
+    
+    # Metadata
+    id: str                 # Unique identifier for the segment
+```
+
+The `Segment` class provides a `describe()` method that returns a formatted string with segment information. This can for example be used for feature extraction:
+
+```python
+print(segment.describe())
+# Output example:
+# Signal Name: art
+# Patient ID: patient_001
+# Annotators: annotator1, annotator2
+# Frequency (Hz): 125.0
+# Start Time: 2024-01-01 12:00:00
+# End Time: 2024-01-01 12:00:10
+# Duration (s): 10.0
+# Anomalous: True
+# Data Loaded: True
+#
+# Data Summary:
+#    Count: 1250
+#    NaN Count: 0
+#    Mean: 120.5
+#    Standard Deviation: 5.2
+#    Min: 110.0
+#    25th Percentile: 116.0
+#    Median: 120.0
+#    75th Percentile: 125.0
+#    Max: 130.0
+```
+
 ## Example Usage
 
 ### General Dataflow
@@ -106,7 +163,7 @@ When working with the library, you typically follow these steps:
 4. **Load Data** (if needed)
    ```python
    # Load actual signal data for segments.
-   # If you don't load the data, you will have empty lists instead of the data. This is done so that you only load the actual data you need into memory.
+   # If you don't load the data, you will have empty arrays instead of the data. This is done so that you only load the actual data you need into memory.
    extractor.load_data(good_segments, anomalous_segments)
    ```
 
