@@ -136,10 +136,11 @@ class IExtractor(ABC):
     @abstractmethod
     def export_to_csv(self, optional_folder_path: Optional[str] = None) -> None:
         """
-        Export data to CSV format.
+        Export segments in CSV format.
         
         Args:
-            optional_folder_path: Optional path to save the CSV file
+            optional_folder_path: Optional path to save the CSV files. 
+            If not provided, the current working directory will be used.
         """
         pass
 
@@ -157,7 +158,7 @@ class Segment:
         patient_id: Identifier of the patient this segment belongs to
         annotators: List of annotators who have annotated this segment
         frequency: Sampling frequency of the signal in Hz
-        data: Array of signal values
+        data: Array of signal values. Empty until `load_data` is called.
         id: Unique identifier for the segment
         weight: Weight value representing annotator consensus (0.0-1.0)
         anomalies_annotations: List of annotators who marked this segment as anomalous
@@ -201,13 +202,14 @@ class Segment:
         if data_loaded:
             description["Data Summary"] = {
                 "Count": len(data),
-                "Mean": np.mean(data),
-                "Standard Deviation": np.std(data),
-                "Min": np.min(data),
-                "25th Percentile": np.percentile(data, 25),
-                "Median": np.percentile(data, 50),
-                "75th Percentile": np.percentile(data, 75),
-                "Max": np.max(data)
+                "NaN Count": np.sum(np.isnan(data)),
+                "Mean": np.nanmean(data),
+                "Standard Deviation": np.nanstd(data),
+                "Min": np.nanmin(data),
+                "25th Percentile": np.nanpercentile(data, 25),
+                "Median": np.nanpercentile(data, 50),
+                "75th Percentile": np.nanpercentile(data, 75),
+                "Max": np.nanmax(data)
             }
             data_summary = description["Data Summary"]
             description_str += f"\n\nData Summary:\n"
@@ -332,7 +334,7 @@ class Signal:
                     patient_id=patient_id,
                     annotators=[annotator],
                     frequency=self._frequency,
-                    data=[],
+                    data=np.array([]),
                     id=id,
                     weight=0.0,
                     anomalies_annotations=[]
@@ -360,7 +362,7 @@ class Signal:
                     patient_id=patient_id,
                     annotators=[annotator],
                     frequency=self._frequency,
-                    data=[],
+                    data=np.array([]),
                     id=id,
                     weight=0.0,
                     anomalies_annotations=[]
@@ -381,7 +383,7 @@ class Signal:
         """
         for segment in segments:
             segment_start_idx = int((segment.start_timestamp - self._starttime) // 1_000_000 * self._frequency)
-            segment_end_idx = int((segment.end_timestamp - self._starttime) // 1_000_000 * self._frequency) + 1
+            segment_end_idx = int((segment.end_timestamp - self._starttime) // 1_000_000 * self._frequency)
             segment.data = self._raw_data[segment_start_idx:segment_end_idx]
     
     @property
@@ -665,6 +667,9 @@ class SingleFileExtractor(IExtractor):
     def extract(self, signal_name: str) -> Tuple[List[Segment], List[Segment]]:
         """
         Extract good and anomalous segments for a given signal.
+
+        If you wish to work with the data of the segments, call load_data() first.
+        This ensures that you don't load any data into memory unless you need it.
         
         Args:
             signal_name: Name of the signal to extract segments for
@@ -847,7 +852,13 @@ class SingleFileExtractor(IExtractor):
     def export_to_csv(self, optional_folder_path: Optional[str] = None) -> None:
         """
         Export data to CSV format.
-        
+
+        If the optional_folder_path is not provided, the current working directory will be used.
+        If the optional_folder_path does not exist, it will be created.
+
+        The name of the CSV files follows the format:
+        <signal_name>_<weight>_<id>.csv
+
         Args:
             optional_folder_path: Optional path to save the file. If not provided,
                                   uses the current working directory.
@@ -855,23 +866,27 @@ class SingleFileExtractor(IExtractor):
         if not optional_folder_path:
             working_dir = os.getcwd()
             optional_folder_path = working_dir
+        else:
+            if not os.path.exists(optional_folder_path):
+                os.makedirs(optional_folder_path)
         
-        output_file = os.path.join(optional_folder_path, f"{self._hdf5_file_stem}.csv")
+        for signal in self._signals:
+            if not signal.annotated:
+                print(f"Signal {signal.signal_name} is not annotated. If you wish to export it, call auto_annotate() first. Skipping...")
+                continue
+            
+            good_segments, anomalous_segments = self.extract(signal.signal_name)
 
-        with open(output_file, "w") as f:
-            f.write("signal_name,weight,anomalous,data\n")
-            for signal in self._signals:
-                if not signal.annotated:
-                    print(f"Signal {signal.signal_name} is not annotated. Skipping...")
-                    continue
-                
-                good_segments, anomalous_segments = self.extract(signal.signal_name)
+            self.load_data(good_segments, anomalous_segments)
 
-                self.load_data(good_segments, anomalous_segments)
-
-                for segment in good_segments + anomalous_segments:
-                    f.write(f'{signal.signal_name},{segment.weight},{segment.anomalous},"{segment.data.tolist()}"\n')
-
+            segments = good_segments + anomalous_segments
+            for segment in segments:
+                # csv format: timestamp,value
+                with open(os.path.join(optional_folder_path, f"{segment.signal_name}_{segment.weight}_{segment.id}.csv"), "w") as f:
+                    # since we have start_timestamp and end_timestamp, we can interpolate the values between them
+                    timestamps = np.linspace(segment.start_timestamp, segment.end_timestamp, len(segment.data))
+                    for timestamp, value in zip(timestamps, segment.data):
+                        f.write(f"{int(timestamp)},{value}\n")
 
 class FolderExtractor(IExtractor):
     """
@@ -1154,25 +1169,27 @@ if __name__ == "__main__":
     4. Access segment weights and descriptions
     """
     # Example usage of the FolderExtractor
-    dataset_path: str = "/media/DATA/data/DATASETS/2024-05-10/dataset_0"
+    dataset_path: str = "/media/DATA/data/DATASETS/2024-05-10/dataset_0/TBI_011_v2_2_1_22.hdf5"
     annotations_path: str = "/media/DATA/revised_annotations"
     
     # Create a FolderExtractor for the dataset
-    ex: FolderExtractor = FolderExtractor(dataset_path)
+    ex: IExtractor = SingleFileExtractor(dataset_path)
     
     # Auto-annotate using annotation files from a specific path
     ex.auto_annotate(annotations_path)
     
     # Extract good and anomalous segments for the 'icp' signal
     good_segments, anomalous_segments = ex.extract(signal_name="icp")
+
+    ex.load_data(anomalous_segments, good_segments)
+
     print(f"Found {len(good_segments)} good segments and {len(anomalous_segments)} anomalous segments")
-    
-    # Load the data for anomalous segments
-    ex.load_data(anomalous_segments)
+
+    ex.export_to_csv("output23")
 
     # Display segment weights sorted in descending order
     print(f"Segment weights (sorted): {sorted([seg.weight for seg in anomalous_segments], reverse=True)}")
     
     # Print a detailed description of the third-to-last anomalous segment
-    print(anomalous_segments[-3].describe())
+    print(anomalous_segments[-5].describe())
 
