@@ -295,8 +295,8 @@ python anomalies.py -f example_data/TBI_example.hdf5 -s art
 ```
 
 Flags:
-    -f = 'Path to HDF5 file (with corresponding .artf file)'
-    -s = 'Signal to analyze (e.g., "art", "abp", or "icp")'
+- f = 'Path to HDF5 file (with corresponding .artf file)'
+- s = 'Signal to analyze (e.g., "art", "abp", or "icp")'
 
 
 This tool:
@@ -318,7 +318,7 @@ This tool:
 - Summarizes annotation information if available
 
 Flags:
-    -f = 'Path to HDF5 file (with optional .artf file)', 
+- f = 'Path to HDF5 file (with optional .artf file)', 
 
 ### export.py
 Exports segments from the entire dataset and exports them to CSV. You need to supply folder path and path to a folder with annotations:
@@ -328,9 +328,9 @@ python export.py -f example_data/ -a example_data/ -o out
 ```
 
 Flags:
-    -f = 'Path to a folder containing HDF5 files', 
-    -a = 'Path to a folder containing ART files', 
-    -o = 'Output directory'
+- f = 'Path to a folder containing HDF5 files', 
+- a = 'Path to a folder containing ART files', 
+- o = 'Output directory'
 
 This tool:
 - Exports both normal and anomalous segments of all signals in the following format:
