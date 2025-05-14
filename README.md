@@ -70,6 +70,9 @@ The anomaly information is stored in a separate XML file with the same name as t
 
 The library provides two main classes for working with signal data:
 
+> **For the 2025 Creathon event you mainly need to know how to use the FolderExtractor, which will be used to load the entire dataset**
+
+
 - `SingleFileExtractor`: For processing a single HDF5 file with its corresponding `.artf` file
 - `FolderExtractor`: For processing multiple HDF5 files in a directory
 
@@ -141,10 +144,10 @@ When working with the library, you typically follow these steps:
    from lib.loader import SingleFileExtractor, FolderExtractor
 
    # For single file
-   extractor = SingleFileExtractor("path/to/file.hdf5")
+   extractor = SingleFileExtractor("example_data/TBI_example.hdf5")
    
-   # Or for multiple files
-   extractor = FolderExtractor("path/to/directory/")
+   # Or for multiple files (you will primarily be working with the FolderExtractor)
+   extractor = FolderExtractor("example_data/")
    ```
 
 2. **Load Annotations**
@@ -280,7 +283,7 @@ extractor.auto_annotate()
 extractor.export_to_csv("output_directory")
 ```
 
-## Command-line Tools
+## Command-line Tools (look inside them to see more example usage)
 
 The repository includes several command-line tools:
 
@@ -290,6 +293,11 @@ Display information about anomalies in an HDF5 file:
 ```bash
 python anomalies.py -f example_data/TBI_example.hdf5 -s art
 ```
+
+Flags:
+    -f = 'Path to HDF5 file (with corresponding .artf file)'
+    -s = 'Signal to analyze (e.g., "art", "abp", or "icp")'
+
 
 This tool:
 - Lists all anomalous segments for a specific signal
@@ -309,12 +317,20 @@ This tool:
 - Provides statistics about signal values
 - Summarizes annotation information if available
 
+Flags:
+    -f = 'Path to HDF5 file (with optional .artf file)', 
+
 ### export.py
 Exports segments from the entire dataset and exports them to CSV. You need to supply folder path and path to a folder with annotations:
 
 ```bash
 python export.py -f example_data/ -a example_data/ -o out
 ```
+
+Flags:
+    -f = 'Path to a folder containing HDF5 files', 
+    -a = 'Path to a folder containing ART files', 
+    -o = 'Output directory'
 
 This tool:
 - Exports both normal and anomalous segments of all signals in the following format:
@@ -325,8 +341,8 @@ This tool:
 ## Notes
 
 - Signal names can vary between files. ABP may be stored as `art` or `abp` in the HDF5 file.
-- The library automatically handles NaN values and missing data points.
-- You can add multiple annotations from different annotators to the same signal.
+- The extractor automatically sets invalid data points (-99,999) to NaNs.
+- The extractor is designed to work with multiple annotators for each signal, which will not be used in the Creathon 2025 event.
 
 ## Further Resources
 
