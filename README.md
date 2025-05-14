@@ -152,8 +152,8 @@ When working with the library, you typically follow these steps:
 
 2. **Load Annotations**
    ```python
-   # Automatically find and load annotations in the parent folder.
-   # If you wish to annotate with files from elsewhere, you will need to supply the folder path.
+    # Recursively finds and applies annotations in the Extractor's directory
+    # If you wish to find annotations elsewhere, you will need to supply the path
    extractor.auto_annotate()
    ```
 
@@ -191,7 +191,8 @@ import numpy as np
 # Load and process a single HDF5 file
 extractor = SingleFileExtractor("example_data/TBI_example.hdf5")
 
-# Automatically find and apply annotations
+# Recursively finds and applies annotations in the parent directory of the HDF5 file
+# If you wish to find annotations elsewhere, you will need to supply the path
 extractor.auto_annotate()
 
 # Extract good and anomalous segments for the "art" signal
@@ -232,7 +233,8 @@ import matplotlib.pyplot as plt
 # Load all HDF5 files in a directory
 extractor = FolderExtractor("example_data/")
 
-# Automatically find and apply annotations
+# Recursively finds and applies annotations in the Extractor's directory
+# If you wish to find annotations elsewhere, you will need to supply the path
 extractor.auto_annotate()
 
 # Extract all segments from all files for the "art" signal
