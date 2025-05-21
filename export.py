@@ -14,13 +14,13 @@ from pathlib import Path
 
 
 def main(args):
-    hdf5_filepath = args.f
+    hdf5_folderpath = args.f
     output_dir = args.o
-    art_filepath = args.a
+    artf_folderpath = args.a
 
-    extractor = FolderExtractor(hdf5_filepath)
+    extractor = FolderExtractor(hdf5_folderpath)
 
-    extractor.auto_annotate(art_filepath)
+    extractor.auto_annotate(artf_folderpath)
 
     extractor.export_to_csv(output_dir)
 
@@ -38,7 +38,7 @@ if __name__ == "__main__":
                        help='Path to a folder containing HDF5 files', 
                        required=True)
     parser.add_argument('-a', type=str, 
-                       help='Path to a folder containing ART files', 
+                       help='Path to a folder containing ARTF files', 
                        required=True)
     parser.add_argument('-o', type=str, 
                        help='Output directory', 

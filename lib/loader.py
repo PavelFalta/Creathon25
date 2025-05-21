@@ -1,5 +1,5 @@
 """
-v2.3c
+v2.4c
 
 Developed by The Laboratory of Data Analysis and Simulations.
 
@@ -23,6 +23,7 @@ import hashlib
 from abc import ABC, abstractmethod
 from collections import defaultdict
 import pandas as pd
+import tqdm
 
 
 def unix_from_dt(dt_string: str) -> int:
@@ -880,10 +881,8 @@ class SingleFileExtractor(IExtractor):
             self.load_data(good_segments, anomalous_segments)
 
             segments = good_segments + anomalous_segments
-            for segment in segments:
-                # csv format: timestamp,value
+            for segment in tqdm.tqdm(segments, desc="Exporting segments to CSV"):
                 with open(os.path.join(optional_folder_path, f"{segment.signal_name}_{segment.weight}_{segment.id}.csv"), "w") as f:
-                    # since we have start_timestamp and end_timestamp, we can interpolate the values between them
                     timestamps = np.linspace(segment.start_timestamp, segment.end_timestamp, len(segment.data))
                     for timestamp, value in zip(timestamps, segment.data):
                         f.write(f"{int(timestamp)},{value}\n")
