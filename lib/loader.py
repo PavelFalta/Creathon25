@@ -881,7 +881,7 @@ class SingleFileExtractor(IExtractor):
             self.load_data(good_segments, anomalous_segments)
 
             segments = good_segments + anomalous_segments
-            for segment in tqdm.tqdm(segments, desc="Exporting segments to CSV"):
+            for segment in segments:
                 with open(os.path.join(optional_folder_path, f"{segment.signal_name}_{segment.weight}_{segment.id}.csv"), "w") as f:
                     timestamps = np.linspace(segment.start_timestamp, segment.end_timestamp, len(segment.data))
                     for timestamp, value in zip(timestamps, segment.data):
@@ -1153,7 +1153,7 @@ class FolderExtractor(IExtractor):
         if not os.path.exists(folder_path):
             os.makedirs(folder_path)
 
-        for extractor in self._extractors:
+        for extractor in tqdm.tqdm(self._extractors, desc="Exporting segments to CSV"):
             extractor.export_to_csv(folder_path)
 
 
